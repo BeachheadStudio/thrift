@@ -17,14 +17,13 @@
  * under the License.
  */
 
-package thrift_test
+package thrift
 
 import (
-  . "thrift"
-  "testing"
+	"testing"
 )
 
 func TestMemoryBuffer(t *testing.T) {
-  trans := NewTMemoryBufferLen(1024)
-  TransportTest(t, trans, trans)
+	trans := NewTMemoryBufferLen(1024)
+	TransportTest(t, trans, trans)
 }
