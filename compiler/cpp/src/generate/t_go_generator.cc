@@ -191,7 +191,9 @@ class t_go_generator : public t_generator {
   std::string render_fastbinary_includes();
   std::string declare_argument(t_field* tfield);
   std::string render_field_default_value(t_field* tfield, const string& name);
-  std::string type_name(t_type* ttype, string (*filter)(const string&) = identity);
+  std::string type_name(t_type* ttype, 
+			string (*filter)(const string&) = identity,
+			const string& prefix = "");
   std::string function_signature(t_function* tfunction, std::string prefix="");
   std::string function_signature_if(t_function* tfunction, std::string prefix="", bool addOsError=false);
   std::string argument_list(t_struct* tstruct);
@@ -227,7 +229,7 @@ class t_go_generator : public t_generator {
 
   std::string go_type_prefix(t_type*);
   static std::set<string> get_go_includes(t_program*);
-  static std::set<string> get_go_modules_used(t_service*);
+  static std::set<string> get_go_modules_used(t_service*, bool remote);
   static std::set<string> get_go_modules_used(const std::vector<t_typedef*>&);
   static std::set<string> get_go_modules_used(const std::vector<t_struct*>&);
   static std::set<string> get_go_modules_used(t_struct*);
@@ -350,7 +352,7 @@ std::string t_go_generator::variable_name_to_go_name(const std::string& value) {
     default:
       return value;
   }
-  return value2 + "_a1";
+  return value2 + "_";
 }
 
 
@@ -410,13 +412,13 @@ std::set<string> t_go_generator::get_go_modules_used(const std::vector<t_typedef
   return result;
 }
 
-std::set<string> t_go_generator::get_go_modules_used(t_service* service) {
+std::set<string> t_go_generator::get_go_modules_used(t_service* service, bool remote) {
   std::set<string> result;
   const std::vector<t_function*>& functions = service->get_functions();
   for (std::vector<t_function*>::const_iterator fn = functions.begin(); fn != functions.end(); ++fn) {
-    modules_union(result, get_go_modules_used((*fn)->get_returntype()));
+    if (!remote) modules_union(result, get_go_modules_used((*fn)->get_returntype()));
     modules_union(result, get_go_modules_used((*fn)->get_arglist()));
-    modules_union(result, get_go_modules_used((*fn)->get_xceptions()));
+    if (!remote) modules_union(result, get_go_modules_used((*fn)->get_xceptions()));
   }
   return result;
 }
@@ -463,50 +465,6 @@ void t_go_generator::init_generator() {
   
   vector<t_service*> services = program_->get_services();
   vector<t_service*>::iterator sv_iter;
-  string f_init_name = package_dir_+"/Makefile";
-  ofstream f_init;
-  f_init.open(f_init_name.c_str());
-  f_init  << 
-    endl <<
-    "include $(GOROOT)/src/Make.inc" << endl << endl <<
-    "all: install" << endl << endl <<
-    "TARG=thriftlib/" << target << endl << endl <<
-    "DIRS=\\" << endl;
-  for (sv_iter = services.begin(); sv_iter != services.end(); ++sv_iter) {
-    f_init << "  " << (*sv_iter)->get_name() << "\\" << endl;
-  }
-  f_init << endl <<
-    "GOFILES=\\" << endl <<
-    "  ttypes.go\\" << endl;
-  //  "   constants.go\\" << endl;
-  for (sv_iter = services.begin(); sv_iter != services.end(); ++sv_iter) {
-    f_init << "  " << (*sv_iter)->get_name() << ".go\\" << endl;
-  }
-  f_init << endl << endl <<
-    "include $(GOROOT)/src/Make.pkg" << endl << endl;
-  f_init.close();
-
-  for (sv_iter = services.begin(); sv_iter != services.end(); ++sv_iter) {
-    string service_dir = package_dir_+"/"+(*sv_iter)->get_name();
-#ifdef MINGW
-    mkdir(service_dir.c_str());
-#else
-    mkdir(service_dir.c_str(), 0755);
-#endif
-    string f_init_name = service_dir+"/Makefile";
-    ofstream f_init;
-    f_init.open(f_init_name.c_str());
-    f_init  <<
-      endl <<
-      "include $(GOROOT)/src/Make.inc" << endl << endl <<
-      "all: install" << endl << endl <<
-      "TARG=" << publicize((*sv_iter)->get_name()) << "-remote" << endl << endl <<
-      "DIRS=\\" << endl << endl <<
-      "GOFILES=\\" << endl <<
-      "  " << (*sv_iter)->get_name() << "-remote.go\\" << endl << endl <<
-      "include $(GOROOT)/src/Make.cmd" << endl << endl;
-    f_init.close();
-  }
 
   std::set<string> uses = get_go_modules_used(program_->get_typedefs());
   modules_union(uses, get_go_modules_used(program_->get_structs()));
@@ -570,7 +528,8 @@ string t_go_generator::go_package() {
 string t_go_generator::go_imports(bool types) {
   const t_program* program = get_program();
   const std::vector<t_struct *>& structs = program->get_structs();
-  if (!types || structs.size() > 0) {
+  const std::vector<t_struct *>& xceptions = program->get_xceptions();
+  if (!types || structs.size() > 0 || xceptions.size() > 0) {
     // We don't need to import thrift or fmt if we're generating type definitions
     // this program doesn't define any structs.
     return
@@ -1051,6 +1010,7 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
     if((*f_iter)->get_req() == t_field::T_OPTIONAL) {
       const string field_name(publicize((*f_iter)->get_name()));
+      const string safe_field_name(publicize(variable_name_to_go_name((*f_iter)->get_name())));
       t_const_value* field_default_value = (*f_iter)->get_value();
       out <<
         indent() << "func (p *" << tstruct_name << ") IsSet" << field_name << "() bool {" << endl;
@@ -1066,17 +1026,17 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
           if (((t_base_type*)type)->is_binary()) {
             // ignore default value for binary
             out << 
-              indent() << "return p." << field_name << " != nil" << endl;
+              indent() << "return p." << safe_field_name << " != nil" << endl;
           } else {
             s_check_value = (field_default_value == NULL) ? "\"\"" : render_const_value(type, field_default_value, tstruct_name);
             out << 
-              indent() << "return p." << field_name << " != " << s_check_value << endl;
+              indent() << "return p." << safe_field_name << " != " << s_check_value << endl;
           }
           break;
         case t_base_type::TYPE_BOOL:
           s_check_value = (field_default_value != NULL && field_default_value->get_integer() > 0) ? "true" : "false";
           out << 
-            indent() << "return p." << field_name << " != " << s_check_value << endl;
+            indent() << "return p." << safe_field_name << " != " << s_check_value << endl;
           break;
         case t_base_type::TYPE_BYTE:
         case t_base_type::TYPE_I16:
@@ -1084,12 +1044,12 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
         case t_base_type::TYPE_I64:
           i_check_value = (field_default_value == NULL) ? 0 : field_default_value->get_integer();
           out << 
-            indent() << "return p." << field_name << " != " << i_check_value << endl;
+            indent() << "return p." << safe_field_name << " != " << i_check_value << endl;
           break;
         case t_base_type::TYPE_DOUBLE:
           d_check_value = (field_default_value == NULL) ? 0.0 : field_default_value->get_double();
           out << 
-            indent() << "return p." << field_name << " != " << d_check_value << endl;
+            indent() << "return p." << safe_field_name << " != " << d_check_value << endl;
           break;
         default:
           throw "compiler error: no const of base type " + t_base_type::t_base_name(tbase);
@@ -1097,25 +1057,25 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
       } else if(type->is_enum()) {
         i_check_value = (field_default_value == NULL) ? 0 : field_default_value->get_integer();
         out << 
-          indent() << "return int64(p." << field_name << ") != " << i_check_value << endl;
+          indent() << "return int64(p." << safe_field_name << ") != " << i_check_value << endl;
       } else if(type->is_struct() || type->is_xception()) {
         out <<
-          indent() << "return p." << field_name << " != nil" << endl;
+          indent() << "return p." << safe_field_name << " != nil" << endl;
       } else if(type->is_list() || type->is_set()) {
         if(field_default_value != NULL && field_default_value->get_list().size() > 0) {
           out <<
-            indent() << "return p." << field_name << " != nil" << endl;
+            indent() << "return p." << safe_field_name << " != nil" << endl;
         } else {
           out <<
-            indent() << "return p." << field_name << " != nil && p." << field_name << ".Len() > 0" << endl;
+            indent() << "return p." << safe_field_name << " != nil && p." << field_name << ".Len() > 0" << endl;
         }
       } else if(type->is_map()) {
         if(field_default_value != NULL && field_default_value->get_map().size() > 0) {
           out <<
-            indent() << "return p." << field_name << " != nil" << endl;
+            indent() << "return p." << safe_field_name << " != nil" << endl;
         } else {
           out <<
-            indent() << "return p." << field_name << " != nil && p." << field_name << ".Len() > 0" << endl;
+            indent() << "return p." << safe_field_name << " != nil && p." << field_name << ".Len() > 0" << endl;
         }
       } else {
         throw "CANNOT GENERATE ISSET HELPERS FOR TYPE: " + type->get_name();
@@ -1335,7 +1295,7 @@ void t_go_generator::generate_go_struct_writer(ofstream& out,
     }
     if(field_required == t_field::T_OPTIONAL) {
       out <<
-        indent() << "if p.IsSet" << publicize(variable_name_to_go_name(field_name)) << "() {" << endl;
+        indent() << "if p.IsSet" << publicize(field_name) << "() {" << endl;
       indent_up();
     }
     out <<
@@ -1391,7 +1351,7 @@ void t_go_generator::generate_service(t_service* tservice) {
     go_autogen_comment() <<
     go_package() <<
     go_imports(false) <<
-    render_includes(get_go_modules_used(tservice));
+    render_includes(get_go_modules_used(tservice, false));
 
   if (tservice->get_extends() != NULL) {
     f_service_ <<
@@ -1742,8 +1702,8 @@ void t_go_generator::generate_service_client(t_service* tservice) {
       vector<t_field*>::const_iterator x_iter;
       for (x_iter = xceptions.begin(); x_iter != xceptions.end(); ++x_iter) {
         f_service_ <<
-          indent() << "if " << result << "." << publicize((*x_iter)->get_name()) << " != nil {" << endl <<
-          indent() << "  " << (*x_iter)->get_name() << " = " << result << "." << publicize((*x_iter)->get_name()) << endl <<
+          indent() << "if " << result << "." << publicize(variable_name_to_go_name((*x_iter)->get_name())) << " != nil {" << endl <<
+          indent() << "  " << variable_name_to_go_name((*x_iter)->get_name()) << " = " << result << "." << publicize(variable_name_to_go_name((*x_iter)->get_name())) << endl <<
           indent() << "}" << endl;
       }
       
@@ -1779,20 +1739,61 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
     service_module.replace(loc, 1, 1, '/');
   }
 
+  // Figure out if we need to include strconv -- only if one or more service params have
+  // an enum or numerical type.
+  bool need_strconv = false;
+  for (f_iter = functions.begin(); !need_strconv && f_iter != functions.end(); ++f_iter) {
+    t_struct* arg_struct = (*f_iter)->get_arglist();
+    const std::vector<t_field*>& args = arg_struct->get_members();
+    vector<t_field*>::const_iterator a_iter;
+    int num_args = args.size();
+    for (int i = 0; !need_strconv && i < num_args; ++i) {
+      t_type* the_type(args[i]->get_type());
+      t_type* the_type2(get_true_type(the_type));
+      if(the_type2->is_enum()) {
+	need_strconv = true;
+	break;
+      } else if(the_type2->is_base_type()) {
+        t_base_type::t_base e = ((t_base_type*)the_type2)->get_base();
+        switch(e) {
+	case t_base_type::TYPE_BYTE:
+	case t_base_type::TYPE_I16:
+	case t_base_type::TYPE_I32:
+	case t_base_type::TYPE_I64:
+	case t_base_type::TYPE_DOUBLE:
+	  need_strconv = true;
+	  break;
+	case t_base_type::TYPE_VOID:
+	case t_base_type::TYPE_STRING:
+	case t_base_type::TYPE_BOOL:
+	default:
+	  break;
+        }
+      }
+    }
+  }
+  
   f_remote <<
     go_autogen_comment() <<
     indent() << "package main" << endl << endl <<
     indent() << "import (" << endl <<
     indent() << "        \"flag\"" << endl <<
     indent() << "        \"fmt\"" << endl <<
+    indent() << "        \"encoding/json\"" << endl <<
     indent() << "        \"net\"" << endl <<
     indent() << "        \"net/url\"" << endl <<
     indent() << "        \"os\"" << endl <<
-    indent() << "        \"strconv\"" << endl <<
     indent() << "        \"thrift\"" << endl <<
     indent() << "        \"thriftlib/" << service_module << "\"" << endl <<
-    indent() << ")" << endl << endl <<
-    render_includes(get_go_modules_used(tservice)) << endl <<
+    indent() << ")" << endl << endl;
+  
+  if (need_strconv) {
+    f_remote <<
+      indent() << "import strconv" << endl << endl;
+  }
+   
+  f_remote <<
+    render_includes(get_go_modules_used(tservice, true)) << endl <<
     indent() << endl <<
     indent() << "func Usage() {" << endl <<
     indent() << "  fmt.Fprint(os.Stderr, \"Usage of \", os.Args[0], \" [-h host:port] [-u url] [-f[ramed]] function [arg1 [arg2...]]:\\n\")" << endl <<
@@ -1807,6 +1808,20 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
   f_remote <<
     indent() << "  fmt.Fprint(os.Stderr, \"\\n\")" << endl <<
     indent() << "  os.Exit(0)" << endl <<
+    indent() << "}" << endl <<
+    indent() << endl <<
+    indent() << "func JsonPrint(args ...interface{}) {" << endl <<
+    indent() << "  for _, arg := range args {" << endl <<
+    indent() << "    pp, err := json.Marshal(arg)" << endl <<
+    indent() << "    if err != nil {" << endl <<
+    indent() << "      fmt.Print(\"error marshalling arg: \")" << endl <<
+    indent() << "      fmt.Print(arg)" << endl <<
+    indent() << "    } else {" << endl <<
+    indent() << "      fmt.Print(string(pp))" << endl <<
+    indent() << "    }" << endl <<
+    indent() << "    fmt.Print(\"  \")" << endl <<
+    indent() << "  }" << endl <<
+    indent() << "  return" << endl <<
     indent() << "}" << endl <<
     indent() << endl <<
     indent() << "func main() {" << endl;
@@ -2061,8 +2076,9 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
           indent() << "value" << i << " := argvalue" << i << endl;
       }
     }
+
     f_remote <<
-      indent() << "fmt.Print(client." << pubName << "(";
+      indent() << "JsonPrint(client." << pubName << "(";
     bool argFirst = true;
     for (int i = 0; i < num_args; ++i) {
       if (argFirst) {
@@ -2094,7 +2110,7 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
       }
     }
     f_remote <<
-      "))" << endl <<
+      ")...)" << endl <<
       indent() << "fmt.Print(\"\\n\")" << endl <<
       indent() << "break" << endl;
     indent_down();
@@ -2114,19 +2130,6 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
 
   // Close service file
   f_remote.close();
-
-  // Make file executable, love that bitwise OR action
-  chmod(f_remote_name.c_str(),
-          S_IRUSR
-        | S_IWUSR
-        | S_IXUSR
-#ifndef MINGW
-        | S_IRGRP
-        | S_IXGRP
-        | S_IROTH
-        | S_IXOTH
-#endif
-  );
 }
 
 /**
@@ -2505,7 +2508,7 @@ void t_go_generator::generate_deserialize_struct(ofstream &out,
     eq = " = ";
   }
   out <<
-    indent() << prefix << eq << "New" << type_name(tstruct, publicize) << "()" << endl <<
+    indent() << prefix << eq << type_name(tstruct, publicize, "New") << "()" << endl <<
     indent() << err2 << " := " << prefix << ".Read(iprot)" << endl <<
     indent() << "if " << err2 << " != nil { return thrift.NewTProtocolExceptionReadStruct(\"" <<
                          escape_string(prefix + tstruct->get_name()) << "\", " <<
@@ -3078,8 +3081,10 @@ string t_go_generator::go_type_prefix(t_type* type) {
   return "";
 }
 
-string t_go_generator::type_name(t_type* ttype, string (*filter)(const string&)) {
-  return go_type_prefix(ttype) + filter(ttype->get_name());
+string t_go_generator::type_name(t_type* ttype,
+				 string (*filter)(const string&),
+				 const string& prefix) {
+  return go_type_prefix(ttype) + prefix + filter(ttype->get_name());
 }
 
 /**
