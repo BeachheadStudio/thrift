@@ -1789,7 +1789,7 @@ void t_go_generator::generate_service_remote(t_service* tservice) {
   
   if (need_strconv) {
     f_remote <<
-      indent() << "import strconv" << endl << endl;
+      indent() << "import \"strconv\"" << endl << endl;
   }
    
   f_remote <<
