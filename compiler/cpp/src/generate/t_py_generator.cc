@@ -139,8 +139,8 @@ class t_py_generator : public t_generator {
   void generate_service_server    (t_service* tservice);
   void generate_process_function  (t_service* tservice, t_function* tfunction);
   void generate_excepts(std::ofstream &out,
-                                        const std::vector<t_field*>& xceptions,
-                                        t_function* tfunction);
+			const std::vector<t_field*>& xceptions,
+			t_function* tfunction);
 
   /**
    * Serialization constructs
@@ -1235,7 +1235,7 @@ void t_py_generator::generate_service_client(t_service* tservice) {
       indent() << indent() << "errbackArgs=(self._seqid,))" << endl;
       indent(f_service_) << "return d" << endl;
     } else {
-      if ((*f_iter)->is_oneway()) {
+      if (!(*f_iter)->is_oneway()) {
         f_service_ << indent();
         if (!(*f_iter)->get_returntype()->is_void()) {
           f_service_ << "return ";
